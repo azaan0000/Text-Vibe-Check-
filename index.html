@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>The Decoder — Plain-language document decoder</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  body { margin: 0; background: #0B0714; }
+  @keyframes floatA { 0%,100% { transform: translate(-10%, -10%) scale(1); } 50% { transform: translate(10%, 15%) scale(1.15); } }
+  @keyframes floatB { 0%,100% { transform: translate(15%, 10%) scale(1.1); } 50% { transform: translate(-10%, -15%) scale(0.95); } }
+  @keyframes floatC { 0%,100% { transform: translate(-5%, 15%) scale(0.95); } 50% { transform: translate(15%, -10%) scale(1.1); } }
+  @keyframes popIn { 0% { transform: rotate(-14deg) scale(0.3); opacity: 0; } 60% { transform: rotate(-4deg) scale(1.08); opacity: 1; } 100% { transform: rotate(-6deg) scale(1); } }
+  @keyframes popIn2 { 0% { transform: rotate(14deg) scale(0.3); opacity: 0; } 60% { transform: rotate(4deg) scale(1.08); opacity: 1; } 100% { transform: rotate(4deg) scale(1); } }
+  @keyframes fadeUp { 0% { opacity: 0; transform: translateY(14px); } 100% { opacity: 1; transform: translateY(0); } }
+  @keyframes scanline { 0% { transform: translateY(-100%); } 100% { transform: translateY(100%); } }
+  @keyframes pulseDot { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+  .fade-up { animation: fadeUp 0.5s ease-out both; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useRef, useEffect } = React;
+
+/* ---------- tiny inline icons (no external icon package needed) ---------- */
+const Icon = ({ d, size = 14, ...p }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}>{d}</svg>
+);
+const IconVolume = (p) => <Icon {...p} d={<><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></>} />;
+const IconMute = (p) => <Icon {...p} d={<><path d="M11 5 6 9H2v6h4l5 4V5Z"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></>} />;
+const IconCopy = (p) => <Icon {...p} d={<><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></>} />;
+const IconCheck = (p) => <Icon {...p} d={<polyline points="20 6 9 17 4 12"/>} />;
+const IconDownload = (p) => <Icon {...p} d={<><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></>} />;
+const IconArchive = (p) => <Icon {...p} d={<><rect x="2" y="4" width="20" height="5" rx="1"/><path d="M4 9v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9"/><line x1="10" y1="13" x2="14" y2="13"/></>} />;
+const IconX = (p) => <Icon {...p} d={<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>} />;
+const IconTrash = (p) => <Icon {...p} d={<><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></>} />;
+const IconSparkle = (p) => <Icon {...p} d={<path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"/>} />;
+const IconKey = (p) => <Icon {...p} d={<><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6M15.5 7.5l3 3L22 7l-3-3"/></>} />;
+
+const SCRAMBLE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ!<>-_\\/[]{}—=+*^?#$%";
+function useScramble(text, seed) {
+  const [display, setDisplay] = useState(text || "");
+  useEffect(() => {
+    if (!text) return;
+    let frame = 0;
+    const totalFrames = Math.min(text.length * 1.4, 55);
+    let raf;
+    const tick = () => {
+      const revealCount = Math.floor((frame / totalFrames) * text.length);
+      let out = "";
+      for (let i = 0; i < text.length; i++) {
+        if (text[i] === " " || i < revealCount) out += text[i];
+        else out += SCRAMBLE_CHARS[Math.floor(Math.random() * SCRAMBLE_CHARS.length)];
+      }
+      setDisplay(out);
+      frame++;
+      if (frame <= totalFrames) raf = requestAnimationFrame(tick);
+      else setDisplay(text);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [text, seed]);
+  return display;
+}
+
+function TiltCard({ children, style, className, maxTilt = 6, onClick }) {
+  const ref = useRef(null);
+  const [t, setT] = useState("perspective(1000px) rotateX(0deg) rotateY(0deg) scale3d(1,1,1)");
+  const move = (e) => {
+    const el = ref.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width - 0.5;
+    const y = (e.clientY - r.top) / r.height - 0.5;
+    setT(`perspective(1000px) rotateX(${(-y * maxTilt).toFixed(2)}deg) rotateY(${(x * maxTilt).toFixed(2)}deg) scale3d(1.012,1.012,1.012)`);
+  };
+  const leave = () => setT("perspective(1000px) rotateX(0deg) rotateY(0deg) scale3d(1,1,1)");
+  return (
+    <div ref={ref} onMouseMove={move} onMouseLeave={leave} onClick={onClick} className={className}
+      style={{ ...style, transform: t, transition: "transform 0.15s ease-out", transformStyle: "preserve-3d" }}>
+      {children}
+    </div>
+  );
+}
+
+function ClarityGauge({ score = 5 }) {
+  const radius = 32;
+  const circumference = 2 * Math.PI * radius;
+  const [offset, setOffset] = useState(circumference);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setOffset(circumference * (1 - score / 10)));
+    return () => cancelAnimationFrame(id);
+  }, [score]);
+  const color = score >= 7 ? "#F87171" : score >= 4 ? "#FBBF24" : "#34D399";
+  return (
+    <div className="flex flex-col items-center">
+      <svg width="80" height="80" viewBox="0 0 80 80">
+        <circle cx="40" cy="40" r={radius} fill="none" stroke="rgba(255,255,255,0.12)" strokeWidth="6" />
+        <circle cx="40" cy="40" r={radius} fill="none" stroke={color} strokeWidth="6" strokeLinecap="round"
+          strokeDasharray={circumference} strokeDashoffset={offset}
+          style={{ transition: "stroke-dashoffset 1.3s cubic-bezier(0.22,1,0.36,1)", transform: "rotate(-90deg)", transformOrigin: "40px 40px" }} />
+        <text x="40" y="46" textAnchor="middle" fill="#F4F2FA" fontSize="19" fontFamily="'Space Grotesk', sans-serif" fontWeight="700">{score}</text>
+      </svg>
+      <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, letterSpacing: 1.5, color: "#A8A2C0", marginTop: 4 }}>COMPLEXITY</span>
+    </div>
+  );
+}
+
+const LENSES = ["General", "Legal", "Medical", "Financial", "Academic"];
+const LENS_HINTS = {
+  General: "",
+  Legal: " Pay special attention to legal jargon, statutes, obligations, and rights.",
+  Medical: " Pay special attention to medical terminology, test values, and what's normal vs concerning.",
+  Financial: " Pay special attention to fees, interest, dates, and financial consequences.",
+  Academic: " Pay special attention to requirements, grading terms, and deadlines.",
+};
+const SAMPLE = "Notice of Adjustment: Your account has been assessed a late compliance fee of $47.00 pursuant to Section 4.2(b) of the governing agreement. Failure to remit payment within fifteen (15) business days from the date of this notice may result in escalation to a third-party collections agency and adverse reporting to consumer credit bureaus. If you believe this assessment was made in error, you may submit a written dispute within ten (10) calendar days, accompanied by supporting documentation, to the address listed below.";
+
+/* ---------- localStorage helpers (real browser storage, this is a real website) ---------- */
+const loadArchive = () => {
+  try { const raw = localStorage.getItem("decoder-archive"); return raw ? JSON.parse(raw) : []; }
+  catch (e) { return []; }
+};
+const persistArchive = (list) => {
+  try { localStorage.setItem("decoder-archive", JSON.stringify(list)); } catch (e) {}
+};
+const loadApiKey = () => { try { return localStorage.getItem("decoder-api-key") || ""; } catch (e) { return ""; } };
+const saveApiKeyLS = (k) => { try { localStorage.setItem("decoder-api-key", k); } catch (e) {} };
+const loadModel = () => { try { return localStorage.getItem("decoder-model") || "claude-sonnet-5"; } catch (e) { return "claude-sonnet-5"; } };
+const saveModelLS = (m) => { try { localStorage.setItem("decoder-model", m); } catch (e) {} };
+
+function DecoderPro() {
+  const [input, setInput] = useState("");
+  const [lens, setLens] = useState("General");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [result, setResult] = useState(null);
+  const [resultSeed, setResultSeed] = useState(0);
+  const [checked, setChecked] = useState({});
+  const [speaking, setSpeaking] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [archive, setArchive] = useState([]);
+  const [termsThisSession, setTermsThisSession] = useState(0);
+  const [mouse, setMouse] = useState({ x: -500, y: -500 });
+  const [toast, setToast] = useState(null);
+  const [apiKey, setApiKey] = useState("");
+  const [model, setModel] = useState("claude-sonnet-5");
+  const [showSettings, setShowSettings] = useState(false);
+  const [tempKey, setTempKey] = useState("");
+  const [tempModel, setTempModel] = useState("claude-sonnet-5");
+  const resultRef = useRef(null);
+
+  useEffect(() => {
+    const h = (e) => setMouse({ x: e.clientX, y: e.clientY });
+    window.addEventListener("mousemove", h);
+    return () => window.removeEventListener("mousemove", h);
+  }, []);
+
+  useEffect(() => {
+    setArchive(loadArchive());
+    const k = loadApiKey();
+    const m = loadModel();
+    setApiKey(k);
+    setModel(m);
+    setTempKey(k);
+    setTempModel(m);
+    if (!k) setShowSettings(true);
+  }, []);
+
+  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2200); };
+
+  const saveSettings = () => {
+    setApiKey(tempKey.trim());
+    setModel(tempModel.trim() || "claude-sonnet-5");
+    saveApiKeyLS(tempKey.trim());
+    saveModelLS(tempModel.trim() || "claude-sonnet-5");
+    setShowSettings(false);
+    showToast("Settings saved to this browser");
+  };
+
+  const saveToArchive = (data) => {
+    const id = Date.now().toString();
+    const entry = {
+      id, documentType: data.documentType, summary: (data.summary || "").slice(0, 90),
+      urgency: data.urgency, savedAt: new Date().toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }),
+      fullData: data,
+    };
+    const newList = [entry, ...archive].slice(0, 40);
+    persistArchive(newList);
+    setArchive(newList);
+    showToast("Saved to your Case Archive");
+  };
+
+  const openArchiveItem = (id) => {
+    const item = archive.find((a) => a.id === id);
+    if (item) {
+      setResult(item.fullData);
+      setResultSeed((s) => s + 1);
+      setChecked({});
+      setDrawerOpen(false);
+      setTimeout(() => resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
+    }
+  };
+
+  const deleteArchiveItem = (id, e) => {
+    e.stopPropagation();
+    const newList = archive.filter((a) => a.id !== id);
+    persistArchive(newList);
+    setArchive(newList);
+  };
+
+  const decode = async () => {
+    if (!input.trim()) return;
+    if (!apiKey) { setShowSettings(true); showToast("Add your Anthropic API key first"); return; }
+    setLoading(true); setError(null); setResult(null); setChecked({});
+    if (speaking) { try { window.speechSynthesis.cancel(); } catch (e) {} setSpeaking(false); }
+
+    const system = `You are "The Decoder" — a plain-language translator for confusing official documents (legal, medical, financial, government, academic).${LENS_HINTS[lens]}
+Return ONLY a raw JSON object, no markdown fences, no preamble, matching exactly this shape:
+{
+  "documentType": "short label like 'Collections Notice' or 'Lab Report'",
+  "urgency": "none" | "moderate" | "high",
+  "complexityScore": integer from 1 to 10 (10 = extremely confusing/dense original text),
+  "summary": "2-3 plain sentences explaining what this document actually means, written for someone with no background in the subject",
+  "keyTerms": [ { "term": "confusing word or phrase from the text", "meaning": "one plain-English sentence explaining it" } ],
+  "actionSteps": [ "short, concrete, ordered next action the person should take" ],
+  "deadline": "specific deadline mentioned in the text, or null if none"
+}
+Include 3-6 keyTerms and 3-5 actionSteps. Be accurate to the source text — never invent facts, dates, or amounts not present in it. If the document is unclear or incomplete, say so plainly in the summary rather than guessing.`;
+
+    try {
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
+        body: JSON.stringify({ model, max_tokens: 1000, system, messages: [{ role: "user", content: input }] }),
+      });
+      const data = await response.json();
+      if (data.error) throw new Error(data.error.message || "API error");
+      const textBlocks = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
+      const cleaned = textBlocks.replace(/```json|```/g, "").trim();
+      const parsed = JSON.parse(cleaned);
+      setResult(parsed);
+      setResultSeed((s) => s + 1);
+      setTermsThisSession((c) => c + (parsed.keyTerms?.length || 0));
+      saveToArchive(parsed);
+      setTimeout(() => resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
+    } catch (e) {
+      setError("Couldn't decode that. Check your API key in Settings, or try shorter text. (" + e.message + ")");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const toggleSpeak = () => {
+    if (!result) return;
+    try {
+      if (speaking) { window.speechSynthesis.cancel(); setSpeaking(false); return; }
+      const utter = new SpeechSynthesisUtterance(result.summary);
+      utter.rate = 0.98;
+      utter.onend = () => setSpeaking(false);
+      window.speechSynthesis.speak(utter);
+      setSpeaking(true);
+    } catch (e) {}
+  };
+
+  const copySummary = async () => {
+    if (!result) return;
+    try { await navigator.clipboard.writeText(result.summary); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch (e) {}
+  };
+
+  const downloadTxt = () => {
+    if (!result) return;
+    const content = `THE DECODER — CASE FILE
+
+Type: ${result.documentType}
+Urgency: ${result.urgency}
+Complexity: ${result.complexityScore}/10
+
+SUMMARY:
+${result.summary}
+
+GLOSSARY:
+${(result.keyTerms || []).map((k) => `- ${k.term}: ${k.meaning}`).join("\n")}
+
+ACTION STEPS:
+${(result.actionSteps || []).map((s, i) => `${i + 1}. ${s}`).join("\n")}
+${result.deadline ? `\nDEADLINE: ${result.deadline}` : ""}`;
+    const blob = new Blob([content], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `decoded-${(result.documentType || "file").replace(/\s+/g, "-").toLowerCase()}.txt`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const scrambledSummary = useScramble(result?.summary || "", resultSeed);
+  const urgencyColor = result?.urgency === "high" ? "#F87171" : result?.urgency === "moderate" ? "#FBBF24" : "#34D399";
+  const urgencyLabel = result?.urgency === "high" ? "TIME-SENSITIVE" : result?.urgency === "moderate" ? "NEEDS ATTENTION" : "NO RUSH";
+
+  return (
+    <div style={{ position: "relative", minHeight: "100vh", background: "#0B0714", overflow: "hidden", fontFamily: "'Inter', sans-serif", color: "#F4F2FA" }}>
+      <div style={{ position: "fixed", inset: 0, zIndex: 0, pointerEvents: "none" }}>
+        <div style={{ position: "absolute", top: "-10%", left: "-10%", width: "50vw", height: "50vw", borderRadius: "50%", background: "radial-gradient(circle, rgba(124,58,237,0.55), transparent 70%)", filter: "blur(70px)", animation: "floatA 22s ease-in-out infinite" }} />
+        <div style={{ position: "absolute", top: "30%", right: "-15%", width: "55vw", height: "55vw", borderRadius: "50%", background: "radial-gradient(circle, rgba(20,184,166,0.45), transparent 70%)", filter: "blur(80px)", animation: "floatB 26s ease-in-out infinite" }} />
+        <div style={{ position: "absolute", bottom: "-15%", left: "10%", width: "45vw", height: "45vw", borderRadius: "50%", background: "radial-gradient(circle, rgba(245,158,11,0.35), transparent 70%)", filter: "blur(75px)", animation: "floatC 30s ease-in-out infinite" }} />
+      </div>
+
+      <div style={{ position: "fixed", inset: 0, zIndex: 1, pointerEvents: "none", background: `radial-gradient(500px circle at ${mouse.x}px ${mouse.y}px, rgba(236,72,153,0.09), transparent 45%)` }} />
+
+      {toast && (
+        <div className="fade-up" style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", zIndex: 50, background: "rgba(20,15,35,0.9)", border: "1px solid rgba(255,255,255,0.15)", backdropFilter: "blur(10px)", padding: "10px 18px", borderRadius: "999px", fontSize: 13, fontFamily: "'IBM Plex Mono', monospace" }}>
+          {toast}
+        </div>
+      )}
+
+      {showSettings && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div style={{ background: "#150E24", border: "1px solid rgba(255,255,255,0.14)", borderRadius: 18, padding: 24, maxWidth: 420, width: "100%" }}>
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <IconKey size={18} />
+                <span style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, fontSize: 18 }}>Your API Key</span>
+              </div>
+              {apiKey && <button onClick={() => setShowSettings(false)} style={{ background: "none", border: "none", color: "#A8A2C0", cursor: "pointer" }}><IconX size={18} /></button>}
+            </div>
+            <p style={{ fontSize: 13, color: "#B8B3CC", lineHeight: 1.6, marginBottom: 14 }}>
+              This app needs an Anthropic API key to work. It's stored only in your browser (never sent anywhere except Anthropic).
+              Get one at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer" style={{ color: "#5EEAD4" }}>console.anthropic.com</a>.
+            </p>
+            <label style={{ fontSize: 11, fontFamily: "'IBM Plex Mono', monospace", color: "#A8A2C0", letterSpacing: 1 }}>API KEY</label>
+            <input type="password" value={tempKey} onChange={(e) => setTempKey(e.target.value)} placeholder="sk-ant-..."
+              style={{ width: "100%", marginTop: 6, marginBottom: 14, background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 8, padding: "10px 12px", color: "#F4F2FA", fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, outline: "none" }} />
+            <label style={{ fontSize: 11, fontFamily: "'IBM Plex Mono', monospace", color: "#A8A2C0", letterSpacing: 1 }}>MODEL</label>
+            <input type="text" value={tempModel} onChange={(e) => setTempModel(e.target.value)}
+              style={{ width: "100%", marginTop: 6, marginBottom: 18, background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 8, padding: "10px 12px", color: "#F4F2FA", fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, outline: "none" }} />
+            <button onClick={saveSettings} style={{ width: "100%", background: "linear-gradient(135deg, #FBBF24, #F59E0B)", color: "#0B0714", fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, border: "none", borderRadius: 999, padding: "12px", cursor: "pointer" }}>
+              Save & Continue
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div style={{ position: "fixed", top: 0, right: 0, height: "100vh", width: "min(340px, 88vw)", background: "rgba(15,10,28,0.85)", backdropFilter: "blur(20px)", borderLeft: "1px solid rgba(255,255,255,0.1)", zIndex: 40, transform: drawerOpen ? "translateX(0)" : "translateX(100%)", transition: "transform 0.35s cubic-bezier(0.22,1,0.36,1)", padding: 22, overflowY: "auto" }}>
+        <div className="flex items-center justify-between mb-5">
+          <span style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, fontSize: 18 }}>Case Archive</span>
+          <button onClick={() => setDrawerOpen(false)} style={{ background: "none", border: "none", color: "#A8A2C0", cursor: "pointer" }}><IconX size={20} /></button>
+        </div>
+        {archive.length === 0 && <p style={{ fontSize: 13, color: "#A8A2C0", lineHeight: 1.6 }}>Nothing saved yet. Every file you decode is stored here automatically, in this browser.</p>}
+        <div className="space-y-2">
+          {archive.map((a) => (
+            <div key={a.id} onClick={() => openArchiveItem(a.id)} style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "12px 14px", cursor: "pointer" }}>
+              <div className="flex items-center justify-between">
+                <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, letterSpacing: 1, color: "#A8A2C0" }}>{a.savedAt}</span>
+                <button onClick={(e) => deleteArchiveItem(a.id, e)} style={{ background: "none", border: "none", color: "#A8A2C0", cursor: "pointer" }}><IconTrash size={13} /></button>
+              </div>
+              <div style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 600, fontSize: 14, marginTop: 4 }}>{a.documentType}</div>
+              <div style={{ fontSize: 12, color: "#C4BFDA", marginTop: 2, lineHeight: 1.4 }}>{a.summary}…</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ position: "relative", zIndex: 2 }}>
+        <div className="max-w-3xl mx-auto px-6 pt-6 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#34D399", animation: "pulseDot 2s ease-in-out infinite", display: "inline-block" }} />
+            <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, letterSpacing: 2, color: "#A8A2C0" }}>SYSTEM ONLINE</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={() => { setTempKey(apiKey); setTempModel(model); setShowSettings(true); }} style={{ display: "flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 999, padding: "7px 12px", color: "#F4F2FA", fontSize: 12, fontFamily: "'IBM Plex Mono', monospace", cursor: "pointer" }}>
+              <IconKey size={13} /> {apiKey ? "Key set" : "Add key"}
+            </button>
+            <button onClick={() => setDrawerOpen(true)} style={{ display: "flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 999, padding: "7px 14px", color: "#F4F2FA", fontSize: 12, fontFamily: "'IBM Plex Mono', monospace", cursor: "pointer" }}>
+              <IconArchive size={13} /> Archive {archive.length > 0 && `(${archive.length})`}
+            </button>
+          </div>
+        </div>
+
+        <header className="max-w-3xl mx-auto px-6 pt-10 pb-8">
+          <h1 style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, fontSize: "clamp(2.6rem, 8vw, 4.2rem)", lineHeight: 1.0, letterSpacing: "-0.02em", backgroundImage: "linear-gradient(135deg, #F4F2FA 20%, #C4B5FD 55%, #5EEAD4 100%)", WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent" }}>
+            The Decoder.
+          </h1>
+          <p style={{ fontSize: 17, color: "#B8B3CC", marginTop: 16, maxWidth: "42ch", lineHeight: 1.55 }}>
+            Paste anything confusing — a legal notice, a lab report, a lease, a rejection letter.
+            Get it back in plain words, with what it actually means and what to do next.
+          </p>
+          {termsThisSession > 0 && (
+            <div className="fade-up" style={{ marginTop: 14, display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, fontFamily: "'IBM Plex Mono', monospace", color: "#5EEAD4" }}>
+              <IconSparkle size={13} /> {termsThisSession} confusing terms decoded this session
+            </div>
+          )}
+        </header>
+
+        <div className="max-w-3xl mx-auto px-6 mb-4 flex flex-wrap gap-2">
+          {LENSES.map((l) => (
+            <button key={l} onClick={() => setLens(l)}
+              style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, letterSpacing: 0.5, padding: "7px 14px", borderRadius: 999, border: lens === l ? "1px solid transparent" : "1px solid rgba(255,255,255,0.15)", background: lens === l ? "linear-gradient(135deg, #7C3AED, #14B8A6)" : "rgba(255,255,255,0.04)", color: lens === l ? "#fff" : "#B8B3CC", cursor: "pointer", transition: "all 0.2s ease" }}>
+              {l}
+            </button>
+          ))}
+        </div>
+
+        <main className="max-w-3xl mx-auto px-6 pb-24">
+          <TiltCard maxTilt={2} style={{ background: "rgba(255,255,255,0.05)", backdropFilter: "blur(20px)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 20, padding: 22, boxShadow: "0 20px 60px -20px rgba(0,0,0,0.6)" }}>
+            <div className="flex items-center justify-between mb-3">
+              <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, letterSpacing: 2, color: "#A8A2C0" }}>DOCUMENT — PASTE BELOW</span>
+              <button onClick={() => setInput(SAMPLE)} style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, color: "#5EEAD4", background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}>try an example</button>
+            </div>
+            <textarea value={input} onChange={(e) => setInput(e.target.value)} placeholder="Paste the confusing text here..." rows={8}
+              style={{ width: "100%", background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, padding: 14, fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, lineHeight: 1.55, color: "#F4F2FA", resize: "vertical", outline: "none" }} />
+            <div className="flex items-center justify-between mt-4 flex-wrap gap-3">
+              <span style={{ fontSize: 12, color: "#786F94" }}>{input.length > 0 ? `${input.length} characters` : "Nothing pasted yet"}</span>
+              <button onClick={decode} disabled={!input.trim() || loading}
+                style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 600, fontSize: 14, letterSpacing: 0.5, color: "#0B0714", background: !input.trim() || loading ? "rgba(255,255,255,0.15)" : "linear-gradient(135deg, #FBBF24, #F59E0B)", border: "none", borderRadius: 999, padding: "13px 26px", cursor: !input.trim() || loading ? "default" : "pointer", boxShadow: !input.trim() || loading ? "none" : "0 8px 24px -8px rgba(245,158,11,0.6)", transition: "transform 0.15s ease" }}
+                onMouseEnter={(e) => { if (input.trim() && !loading) e.currentTarget.style.transform = "scale(1.03)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.transform = "scale(1)"; }}>
+                {loading ? "DECRYPTING…" : "DECODE THIS FILE"}
+              </button>
+            </div>
+          </TiltCard>
+
+          {loading && (
+            <div style={{ position: "relative", marginTop: 30, height: 90, overflow: "hidden", borderRadius: 12, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)" }}>
+              <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, transparent, rgba(94,234,212,0.25), transparent)", animation: "scanline 1.6s linear infinite" }} />
+              <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, letterSpacing: 2, color: "#5EEAD4" }}>ANALYZING DOCUMENT STRUCTURE…</div>
+            </div>
+          )}
+
+          {error && <div style={{ marginTop: 20, color: "#F87171", fontFamily: "'IBM Plex Mono', monospace", fontSize: 13 }}>{error}</div>}
+
+          {result && (
+            <div ref={resultRef} className="mt-10 space-y-6">
+              <TiltCard maxTilt={2} style={{ background: "rgba(255,255,255,0.05)", backdropFilter: "blur(20px)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 18, padding: 20 }}>
+                <div className="flex items-center justify-between flex-wrap gap-4">
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <div style={{ border: "2px solid #34D399", color: "#34D399", padding: "5px 12px", borderRadius: 6, fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, letterSpacing: 2, animation: "popIn 0.5s ease-out both" }}>DECLASSIFIED</div>
+                    <div style={{ border: `2px solid ${urgencyColor}`, color: urgencyColor, padding: "5px 12px", borderRadius: 6, fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, letterSpacing: 2, animation: "popIn2 0.5s ease-out both" }}>{urgencyLabel}</div>
+                    <span style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 600, fontSize: 14 }}>{result.documentType}</span>
+                  </div>
+                  <ClarityGauge score={result.complexityScore || 5} />
+                </div>
+                <div className="flex items-center gap-2 mt-5 flex-wrap">
+                  <button onClick={toggleSpeak} style={{ display: "flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.14)", borderRadius: 999, padding: "8px 14px", color: "#F4F2FA", fontSize: 12, cursor: "pointer" }}>
+                    {speaking ? <IconMute /> : <IconVolume />} {speaking ? "Stop" : "Listen"}
+                  </button>
+                  <button onClick={copySummary} style={{ display: "flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.14)", borderRadius: 999, padding: "8px 14px", color: "#F4F2FA", fontSize: 12, cursor: "pointer" }}>
+                    {copied ? <IconCheck /> : <IconCopy />} {copied ? "Copied" : "Copy"}
+                  </button>
+                  <button onClick={downloadTxt} style={{ display: "flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.14)", borderRadius: 999, padding: "8px 14px", color: "#F4F2FA", fontSize: 12, cursor: "pointer" }}>
+                    <IconDownload /> Save .txt
+                  </button>
+                </div>
+              </TiltCard>
+
+              <TiltCard maxTilt={1.5} style={{ background: "rgba(255,255,255,0.05)", backdropFilter: "blur(20px)", border: "1px solid rgba(255,255,255,0.12)", borderLeft: `3px solid ${urgencyColor}`, borderRadius: 18, padding: 22 }}>
+                <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, letterSpacing: 2, color: "#A8A2C0", marginBottom: 10 }}>WHAT IT ACTUALLY MEANS</div>
+                <p style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 18, lineHeight: 1.6, minHeight: "3.2em" }}>{scrambledSummary}</p>
+                {result.deadline && (
+                  <div style={{ marginTop: 14, display: "inline-block", fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: "#F87171", border: "1px dashed #F87171", padding: "5px 12px", borderRadius: 6 }}>DEADLINE: {result.deadline}</div>
+                )}
+              </TiltCard>
+
+              {result.keyTerms?.length > 0 && (
+                <section>
+                  <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, letterSpacing: 2, color: "#A8A2C0", marginBottom: 10 }}>GLOSSARY</div>
+                  <div className="grid sm:grid-cols-2 gap-3">
+                    {result.keyTerms.map((kt, i) => (
+                      <TiltCard key={i} maxTilt={5} style={{ background: "rgba(255,255,255,0.05)", backdropFilter: "blur(14px)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 14, padding: "14px 16px" }}>
+                        <div style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 600, fontSize: 15, marginBottom: 4, color: "#5EEAD4" }}>{kt.term}</div>
+                        <div style={{ fontSize: 13.5, color: "#C4BFDA", lineHeight: 1.5 }}>{kt.meaning}</div>
+                      </TiltCard>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {result.actionSteps?.length > 0 && (
+                <section>
+                  <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, letterSpacing: 2, color: "#A8A2C0", marginBottom: 10 }}>WHAT TO DO NEXT</div>
+                  <div style={{ background: "rgba(255,255,255,0.05)", backdropFilter: "blur(14px)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 14, overflow: "hidden" }}>
+                    {result.actionSteps.map((step, i) => (
+                      <label key={i} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "14px 16px", borderBottom: i < result.actionSteps.length - 1 ? "1px solid rgba(255,255,255,0.08)" : "none", cursor: "pointer" }}>
+                        <input type="checkbox" checked={!!checked[i]} onChange={() => setChecked((c) => ({ ...c, [i]: !c[i] }))} style={{ marginTop: 3, accentColor: "#34D399" }} />
+                        <span style={{ fontSize: 14.5, lineHeight: 1.5, textDecoration: checked[i] ? "line-through" : "none", color: checked[i] ? "#786F94" : "#F4F2FA" }}>{step}</span>
+                      </label>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              <button onClick={() => { setResult(null); setInput(""); setError(null); }}
+                style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, letterSpacing: 1, color: "#5EEAD4", background: "none", border: "1px solid rgba(94,234,212,0.4)", borderRadius: 999, padding: "10px 18px", cursor: "pointer" }}>
+                DECODE ANOTHER FILE
+              </button>
+            </div>
+          )}
+        </main>
+
+        <footer className="max-w-3xl mx-auto px-6 pb-10">
+          <div style={{ height: 1, background: "rgba(255,255,255,0.1)" }} />
+          <p style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, color: "#786F94", marginTop: 12 }}>Not legal or medical advice. For anything with real stakes, confirm with a professional.</p>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<DecoderPro />);
+</script>
+</body>
+</html>
